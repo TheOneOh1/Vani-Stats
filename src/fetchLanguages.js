@@ -4,8 +4,22 @@ import https from 'node:https';
  * Make an HTTPS GET request and return parsed JSON.
  * Returns { data, headers } on success; throws on HTTP errors.
  */
+const ALLOWED_HOST = 'api.github.com';
+const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
+
 function httpGet(url, token) {
   return new Promise((resolve, reject) => {
+    // Validate the URL only points to GitHub API (prevents SSRF via crafted Link headers)
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return reject(new Error('Invalid URL'));
+    }
+    if (parsed.hostname !== ALLOWED_HOST || parsed.protocol !== 'https:') {
+      return reject(new Error('Request blocked: URL does not point to api.github.com'));
+    }
+
     const options = {
       headers: {
         'User-Agent': 'github-lang-card',
@@ -19,16 +33,20 @@ function httpGet(url, token) {
     https
       .get(url, options, (res) => {
         let body = '';
-        res.on('data', (chunk) => (body += chunk));
+        let bytes = 0;
+        res.on('data', (chunk) => {
+          bytes += chunk.length;
+          if (bytes > MAX_BODY_BYTES) {
+            res.destroy();
+            return reject(new Error('Response too large'));
+          }
+          body += chunk;
+        });
         res.on('end', () => {
           if (res.statusCode === 403) {
             const remaining = res.headers['x-ratelimit-remaining'];
             if (remaining === '0') {
-              const resetEpoch = res.headers['x-ratelimit-reset'];
-              const resetDate = new Date(Number(resetEpoch) * 1000);
-              const err = new Error(
-                `GitHub API rate limit exceeded. Resets at ${resetDate.toISOString()}`
-              );
+              const err = new Error('GitHub API rate limit exceeded');
               err.code = 'RATE_LIMITED';
               return reject(err);
             }
@@ -41,9 +59,7 @@ function httpGet(url, token) {
           }
 
           if (res.statusCode < 200 || res.statusCode >= 300) {
-            const err = new Error(
-              `GitHub API returned ${res.statusCode}: ${body.slice(0, 200)}`
-            );
+            const err = new Error(`GitHub API returned HTTP ${res.statusCode}`);
             err.code = 'API_ERROR';
             return reject(err);
           }
@@ -72,16 +88,20 @@ function parseNextLink(linkHeader) {
 /**
  * Fetch every public repo for a user, handling pagination.
  */
+const MAX_PAGES = 10; // Safety limit: 10 pages × 100 repos = 1000 repos max
+
 async function fetchAllRepos(username, token) {
   let url = `https://api.github.com/users/${encodeURIComponent(
     username
   )}/repos?per_page=100&type=owner`;
   const repos = [];
+  let page = 0;
 
-  while (url) {
+  while (url && page < MAX_PAGES) {
     const { data, headers } = await httpGet(url, token);
     repos.push(...data);
     url = parseNextLink(headers.link || headers.Link || '');
+    page++;
   }
 
   return repos;
