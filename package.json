@@ -1,0 +1,14 @@
+{
+  "name": "github-lang-card",
+  "version": "1.0.0",
+  "description": "Dynamic SVG card showing top programming languages from a GitHub profile",
+  "type": "module",
+  "scripts": {
+    "dev": "node api/index.js",
+    "test": "node test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
